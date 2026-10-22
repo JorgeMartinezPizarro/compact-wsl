@@ -15,24 +15,71 @@ exit /b
 param(
     [string]$LocalAppData = $env:LOCALAPPDATA,
     [string]$AppData      = $env:APPDATA,
-    [string]$Sid          = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    [string]$Sid          = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
+    [string]$Flag         = ''   # fichero para avisar a la ventana normal de que reinicie Docker
 )
 
-# --- Auto-elevacion (se pasan las rutas del usuario original) ---
+# ------------------------------------------------------------
+# Docker Desktop: parar y arrancar en segundo plano
+# ------------------------------------------------------------
+function Get-DockerCli {
+    $c = Get-Command docker.exe -ErrorAction SilentlyContinue
+    if ($c) { $c.Source } else { $null }
+}
+
+function Stop-DockerDesktop {
+    $cli = Get-DockerCli
+    if ($cli) {
+        & $cli desktop stop 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { return }
+    }
+    # Docker Desktop antiguo sin "docker desktop": cierre forzado
+    Get-Process "Docker Desktop", "com.docker.backend", "com.docker.build" -ErrorAction SilentlyContinue |
+        Stop-Process -Force
+    Start-Sleep -Seconds 5
+}
+
+function Start-DockerDesktopBackground([string]$exe) {
+    $cli = Get-DockerCli
+    if ($cli) {
+        & $cli desktop start --detach 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { return }
+    }
+    # Docker Desktop antiguo: solo se puede abrir la aplicacion
+    if ($exe) { Start-Process $exe }
+}
+
+# ------------------------------------------------------------
+# Ventana normal: elevar, esperar y reiniciar Docker sin privilegios
+# ------------------------------------------------------------
 $yo = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $yo.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $flagPath = Join-Path $env:TEMP "Compactar-VHDX-$PID.flag"
     $argumentos = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" " +
-                  "-LocalAppData `"$LocalAppData`" -AppData `"$AppData`" -Sid $Sid"
+                  "-LocalAppData `"$LocalAppData`" -AppData `"$AppData`" -Sid $Sid -Flag `"$flagPath`""
     try {
-        Start-Process powershell.exe -Verb RunAs -ArgumentList $argumentos -ErrorAction Stop
+        $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $argumentos -PassThru -ErrorAction Stop
     } catch {
         Write-Host "Se necesitan permisos de administrador. Cancelado." -ForegroundColor Red
         Remove-Item -LiteralPath $PSCommandPath -ErrorAction SilentlyContinue
         Read-Host "Pulsa Enter para cerrar"
+        exit
+    }
+
+    Write-Host "Compactando en la ventana de administrador..."
+    while (-not $p.HasExited -and -not (Test-Path -LiteralPath $flagPath)) { Start-Sleep -Seconds 1 }
+
+    if (Test-Path -LiteralPath $flagPath) {
+        $exe = (Get-Content -LiteralPath $flagPath -Raw).Trim()
+        Remove-Item -LiteralPath $flagPath -ErrorAction SilentlyContinue
+        Start-DockerDesktopBackground $exe
     }
     exit
 }
 
+# ------------------------------------------------------------
+# Ventana de administrador: buscar y compactar
+# ------------------------------------------------------------
 function Get-SizeGB($ruta) { [math]::Round((Get-Item -LiteralPath $ruta).Length / 1GB, 2) }
 
 function Find-Vhdx {
@@ -91,15 +138,13 @@ try {
     Write-Host ""
     Read-Host "Pulsa Enter para compactarlos (o cierra la ventana para cancelar)"
 
-    # --- Liberar los discos: cerrar Docker Desktop y apagar WSL ---
+    # --- Liberar los discos: parar Docker Desktop y apagar WSL ---
     $dockerExe = $null
     $docker = Get-Process "Docker Desktop" -ErrorAction SilentlyContinue
     if ($docker) {
         $dockerExe = $docker[0].Path
-        Write-Host "Cerrando Docker Desktop..." -ForegroundColor Cyan
-        Get-Process "Docker Desktop", "com.docker.backend", "com.docker.build" -ErrorAction SilentlyContinue |
-            Stop-Process -Force
-        Start-Sleep -Seconds 5
+        Write-Host "Parando Docker Desktop..." -ForegroundColor Cyan
+        Stop-DockerDesktop
     }
     Write-Host "Apagando WSL (wsl --shutdown)..." -ForegroundColor Cyan
     wsl.exe --shutdown
@@ -140,19 +185,25 @@ try {
     }
     Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
 
+    # --- Reiniciar Docker Desktop en segundo plano ---
+    if ($dockerExe) {
+        Write-Host ""
+        Write-Host "Reiniciando Docker Desktop en segundo plano..." -ForegroundColor Cyan
+        if ($Flag) {
+            # lo hace la ventana normal, sin privilegios de administrador
+            Set-Content -LiteralPath $Flag -Value $dockerExe
+        } else {
+            # el .bat se lanzo ya como administrador: no queda otra que hacerlo aqui
+            Start-DockerDesktopBackground $dockerExe
+        }
+    }
+
     # --- Resumen ---
     Write-Host ""
     Write-Host "=== Resultado ===" -ForegroundColor Green
     $resultados | Format-Table -AutoSize -Wrap | Out-Host
     $total = [math]::Round(($resultados | Measure-Object 'Libre GB' -Sum).Sum, 2)
     Write-Host "Total liberado: $total GB" -ForegroundColor Green
-
-    # --- Reabrir Docker Desktop sin privilegios de administrador ---
-    if ($dockerExe) {
-        Write-Host ""
-        Write-Host "Reabriendo Docker Desktop..." -ForegroundColor Cyan
-        Start-Process explorer.exe -ArgumentList "`"$dockerExe`""
-    }
 
     Write-Host ""
     Read-Host "Pulsa Enter para cerrar"
