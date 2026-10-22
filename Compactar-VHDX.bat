@@ -185,6 +185,13 @@ try {
     }
     Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
 
+    # --- Resetear WSL: tras desmontar los discos intenta levantarse solo
+    #     y queda inestable; un segundo shutdown lo deja limpio ---
+    Write-Host ""
+    Write-Host "Reseteando WSL (wsl --shutdown)..." -ForegroundColor Cyan
+    wsl.exe --shutdown
+    Start-Sleep -Seconds 3
+
     # --- Reiniciar Docker Desktop en segundo plano ---
     if ($dockerExe) {
         Write-Host ""
