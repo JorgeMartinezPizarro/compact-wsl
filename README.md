@@ -1,6 +1,6 @@
 ## About
 
-A simple windows script to compact al the docker - WSL virtual machines.
+Windows do not claim unused space from wsl drives. This script compacts all the WSL virtual machines.
 
 ## Usage
 
@@ -8,7 +8,7 @@ First you need to clean up all your `vhdx` files. Remove `docker`, apt, all cach
 
 Clone the repo with your favorite tool: https://github.com/JorgeMartinezPizarro/compact-wsl
 
-Double click on the bat file.
+Double click on the bat file. Follow the instructions. Enjoy you claimed GBs.
 
 ## License
 
